@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "citizenofthecloud"
+version = "0.1.0"
+description = "Identity and authentication SDK for autonomous AI agents"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Citizen of the Cloud", email = "hello@citizenofthecloud.com"},
+]
+keywords = ["ai", "agents", "identity", "authentication", "cloud-passport", "ed25519"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries",
+]
+
+dependencies = [
+    "cryptography>=41.0",
+]
+
+[project.optional-dependencies]
+fastapi = ["fastapi>=0.100.0"]
+
+[project.urls]
+Homepage = "https://citizenofthecloud.com"
+Documentation = "https://citizenofthecloud.com/docs"
+Repository = "https://github.com/citizenofthecloud/sdk-python"
+Issues = "https://github.com/citizenofthecloud/sdk-python/issues"
+Spec = "https://citizenofthecloud.com/spec"
+
+[tool.setuptools.packages.find]
+include = ["citizenofthecloud*"]
