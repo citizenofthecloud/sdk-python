@@ -36,6 +36,11 @@ __all__ = [
     "CloudSDKError",
     "RegistryError",
     "clear_cache",
+    "request_challenge",
+    "submit_challenge_response",
+    "lookup_agent",
+    "list_directory",
+    "get_governance_feed",
 ]
 
 DEFAULT_REGISTRY = "https://citizenofthecloud.com"
@@ -176,6 +181,161 @@ class CloudIdentity:
         url = f"{self.registry_url}/api/verify?cloud_id={self.cloud_id}"
         data = _fetch_json(url)
         return data.get("agent")
+
+    def prove_identity(self) -> dict:
+        """
+        Prove this agent's identity to the registry via the full challenge/respond
+        cryptographic loop. The server issues a nonce, this method signs it with
+        the private key, the server validates against the registered public key.
+
+        This is the canonical identity-proof flow; the resulting verification_log
+        row is server-witnessed (authenticated=true) and contributes to trust score.
+
+        Returns:
+            dict with keys: verified (bool), agent (dict, on success),
+            error (str, on failure), timestamp (str).
+        """
+        import base64
+        challenge = request_challenge(self.registry_url, self.cloud_id)
+        nonce = challenge["nonce"]
+        # Server signs over the UTF-8 bytes of the hex nonce string (not the
+        # decoded hex bytes) — see registry's lib/verification.js.
+        signature_bytes = self._private_key.sign(nonce.encode("utf-8"))
+        signature_b64 = base64.b64encode(signature_bytes).decode("ascii")
+        return submit_challenge_response(
+            self.registry_url, self.cloud_id, nonce, signature_b64
+        )
+
+
+# ─── Challenge / Respond ──────────────────────────────────────
+
+def request_challenge(registry_url: str, cloud_id: str) -> dict:
+    """
+    Request a verification challenge for a cloud_id. The returned nonce must
+    be signed with the agent's private key (over the UTF-8 bytes of the hex
+    string) and submitted via submit_challenge_response().
+
+    Args:
+        registry_url: Registry base URL
+        cloud_id: The agent's Cloud ID
+
+    Returns:
+        dict with keys: nonce (str, hex), expires_in (int, seconds).
+    """
+    url = f"{registry_url.rstrip('/')}/api/verify/challenge"
+    body = json.dumps({"cloud_id": cloud_id}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        try:
+            err_data = json.loads(err_body)
+            raise RegistryError(err_data.get("error", f"Challenge request failed: {e.code}"))
+        except (json.JSONDecodeError, ValueError):
+            raise RegistryError(f"Challenge request failed: {e.code}")
+    except urllib.error.URLError as e:
+        raise RegistryError(f"Cannot reach registry: {e}")
+
+
+def submit_challenge_response(
+    registry_url: str, cloud_id: str, nonce: str, signature: str
+) -> dict:
+    """
+    Submit a signed challenge response. The registry validates the signature
+    against the agent's registered public key and returns the verified agent.
+
+    Args:
+        registry_url: Registry base URL
+        cloud_id: The agent's Cloud ID
+        nonce: The hex nonce returned by request_challenge()
+        signature: Base64-encoded Ed25519 signature over the UTF-8 nonce bytes
+
+    Returns:
+        dict with keys: verified (bool), agent (dict, on success),
+        error (str, on failure), timestamp (str).
+    """
+    url = f"{registry_url.rstrip('/')}/api/verify/respond"
+    body = json.dumps({
+        "cloud_id": cloud_id, "nonce": nonce, "signature": signature,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # respond returns non-2xx for failed verification — still parse the body
+        try:
+            return json.loads(e.read().decode("utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            raise RegistryError(f"Respond request failed: {e.code}")
+    except urllib.error.URLError as e:
+        raise RegistryError(f"Cannot reach registry: {e}")
+
+
+# ─── Registry queries (no auth) ───────────────────────────────
+
+
+def lookup_agent(registry_url: str, cloud_id: str) -> Optional[dict]:
+    """
+    Look up an agent's public record by cloud_id.
+
+    Args:
+        registry_url: Registry base URL
+        cloud_id: The agent's Cloud ID
+
+    Returns:
+        Agent dict with name, declared_purpose, autonomy_level, capabilities,
+        operational_domain, covenant_signed, status, trust_score, public_key,
+        registration_date, last_verified, owner_username — or None if not found.
+    """
+    url = f"{registry_url.rstrip('/')}/api/verify?cloud_id={cloud_id}"
+    data = _fetch_json(url)
+    if not data.get("verified"):
+        return None
+    return data.get("agent")
+
+
+def list_directory(registry_url: str) -> list:
+    """
+    List public agent directory entries.
+
+    Args:
+        registry_url: Registry base URL
+
+    Returns:
+        List of agent dicts. Each entry contains the public-facing fields the
+        registry exposes via /api/directory.
+    """
+    url = f"{registry_url.rstrip('/')}/api/directory"
+    data = _fetch_json(url)
+    return data.get("agents", data if isinstance(data, list) else [])
+
+
+def get_governance_feed(registry_url: str) -> list:
+    """
+    Get the governance activity feed.
+
+    Args:
+        registry_url: Registry base URL
+
+    Returns:
+        List of governance event dicts.
+    """
+    url = f"{registry_url.rstrip('/')}/api/governance/feed"
+    data = _fetch_json(url)
+    return data.get("feed", data if isinstance(data, list) else [])
 
 
 # ─── Verification ─────────────────────────────────────────────

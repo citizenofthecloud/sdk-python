@@ -1,6 +1,21 @@
-node_modules/
-.next/
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+
+# Environment / secrets
 .env
 .env.local
+
+# OS / editor
 .DS_Store
 *.log
+
+# Stale (Next.js leftovers — not used by this Python package)
+node_modules/
+.next/
