@@ -41,6 +41,7 @@ __all__ = [
     "lookup_agent",
     "list_directory",
     "get_governance_feed",
+    "register_agent",
 ]
 
 DEFAULT_REGISTRY = "https://citizenofthecloud.com"
@@ -336,6 +337,97 @@ def get_governance_feed(registry_url: str) -> list:
     url = f"{registry_url.rstrip('/')}/api/governance/feed"
     data = _fetch_json(url)
     return data.get("feed", data if isinstance(data, list) else [])
+
+
+# ─── Registration (SDK token auth) ────────────────────────────
+
+
+def register_agent(
+    sdk_token: str,
+    name: str,
+    declared_purpose: str,
+    autonomy_level: str = "tool",
+    capabilities: Optional[list] = None,
+    operational_domain: Optional[str] = None,
+    covenant_signed: bool = True,
+    registry_url: str = DEFAULT_REGISTRY,
+) -> dict:
+    """
+    Register a new agent in a single call.
+
+    Generates a fresh Ed25519 keypair locally, posts the public key plus the
+    agent metadata to the registry, and returns the cloud_id together with
+    both keys. The private key is returned to you and is never sent to the
+    registry — store it securely.
+
+    Args:
+        sdk_token: A cotc_sdk_* token from your account at
+            citizenofthecloud.com/account.
+        name: Human-readable name for the agent.
+        declared_purpose: What the agent does (<= 500 chars).
+        autonomy_level: One of 'tool', 'assistant', 'agent', 'self-directing'.
+        capabilities: Optional list of capability strings.
+        operational_domain: Optional domain string.
+        covenant_signed: Must be True to register (Non-Malicious Covenant).
+        registry_url: Registry base URL.
+
+    Returns:
+        dict with keys: cloud_id, public_key, private_key, name,
+        declared_purpose, autonomy_level, passport.
+
+    Raises:
+        RegistryError on HTTP failure.
+        CloudSDKError if sdk_token is missing or malformed.
+    """
+    if not sdk_token or not sdk_token.startswith("cotc_sdk_"):
+        raise CloudSDKError(
+            "sdk_token must be a cotc_sdk_* token. Create one at "
+            "citizenofthecloud.com/account."
+        )
+
+    keys = generate_key_pair()
+    body = json.dumps({
+        "name": name,
+        "declared_purpose": declared_purpose,
+        "autonomy_level": autonomy_level,
+        "public_key": keys["public_key"],
+        "covenant_signed": covenant_signed,
+        "capabilities": capabilities or [],
+        "operational_domain": operational_domain,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{registry_url.rstrip('/')}/api/register",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {sdk_token}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode("utf-8"))
+            msg = err.get("error") or err.get("error_code") or str(e)
+        except Exception:
+            msg = f"HTTP {e.code}"
+        raise RegistryError(f"Registration failed: {msg}") from e
+    except urllib.error.URLError as e:
+        raise RegistryError(f"Registry unreachable: {e}") from e
+
+    return {
+        "cloud_id": data["cloud_id"],
+        "public_key": keys["public_key"],
+        "private_key": keys["private_key"],
+        "name": name,
+        "declared_purpose": declared_purpose,
+        "autonomy_level": autonomy_level,
+        "passport": data.get("passport"),
+    }
 
 
 # ─── Verification ─────────────────────────────────────────────
