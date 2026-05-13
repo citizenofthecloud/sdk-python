@@ -177,7 +177,7 @@ def main():
     except Exception as e:
         failed(f"Agent A registration failed: {e}")
         if "public key" in str(e).lower():
-            info("Hint: Delete previous test agents from Supabase and try again.")
+            info("Hint: Delete previous test agents from the registry and try again.")
         return
 
     try:
