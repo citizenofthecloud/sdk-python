@@ -4,132 +4,250 @@ Identity and authentication for autonomous AI agents. Python SDK.
 
 **Prove who you are. Verify who you're talking to.**
 
+The Citizen of the Cloud SDK exposes **17 tools** across the agent identity protocol — registration, signing, verification, the challenge/respond loop, registry queries, and a FastAPI route-guard middleware.
+
+---
+
 ## Install
 
-This SDK is currently distributed directly from GitHub. The PyPI release is not yet caught up with the latest features (most recently: `register_agent()` and SDK-token auth). For now, install from GitHub:
-
 ```bash
-git clone https://github.com/citizenofthecloud/sdk-python.git
-pip install -e ./sdk-python
+# From GitHub (latest — recommended while PyPI catches up)
+pip install git+https://github.com/citizenofthecloud/sdk-python.git
+
+# With FastAPI route-guard extras
+pip install "citizenofthecloud[fastapi] @ git+https://github.com/citizenofthecloud/sdk-python.git"
 ```
 
-Or in a `requirements.txt`:
+Requires Python ≥ 3.9 and `cryptography` (installed automatically).
 
-```
-citizenofthecloud @ git+https://github.com/citizenofthecloud/sdk-python.git@main
-```
+---
 
-Requires Python ≥ 3.9 and `cryptography` (installed automatically as a dependency).
+## The 17-tool surface
 
-## Quick Start
+| # | Tool | API | Purpose |
+|---|---|---|---|
+| 1 | lookup-agent | `lookup_agent(registry_url, cloud_id)` | Read another agent's public passport |
+| 2 | get-server-identity | `identity.get_passport()` | Fetch your own passport |
+| 3 | list-directory | `list_directory(registry_url)` | Browse the public agent directory |
+| 4 | governance-feed | `get_governance_feed(registry_url)` | Read recent registry events |
+| 5 | verify-agent | `verify_agent(headers, policy=...)` | Verify signed headers (simple) |
+| 6 | verify-request | `verify_request(headers, url, method, body, policy=...)` | Verify request-bound signature |
+| 7 | request-challenge | `request_challenge(registry_url, cloud_id)` | Ask the registry for a nonce |
+| 8 | respond-to-challenge | `submit_challenge_response(...)` | Submit a signed nonce |
+| 9 | prove-identity | `identity.prove_identity()` | Full challenge/sign/respond loop |
+| 10 | sign-headers | `identity.sign()` | Produce timestamp-bound headers |
+| 11 | sign-request | `identity.sign_request(url, method, body)` | Produce request-bound headers |
+| 12 | cloud-fetch | `cloud_fetch(identity, url, method, body)` | Auto-signed HTTP request |
+| 13 | generate-keypair | `generate_key_pair()` | Make a fresh Ed25519 keypair |
+| 14 | trust-policy | `TrustPolicy(...)` | Reusable verification rules |
+| 15 | clear-cache | `clear_cache()` | Clear the verification cache |
+| 16 | http-middleware | `CloudGuard` / `cloud_guard` (from `citizenofthecloud.fastapi`) | FastAPI route guard |
+| 17 | register-agent | `register_agent(...)` | Programmatic agent registration |
 
-### Register a new agent (one-time setup)
+---
 
-Bootstrap a new Cloud Identity agent from a single function call. Generates a fresh Ed25519 keypair locally, posts the public key to the registry under your SDK token, and returns the `cloud_id` together with both keys. The private key never leaves your process — store it securely.
-
-Get an SDK token from [citizenofthecloud.com/account](https://citizenofthecloud.com/account).
+## Quick start (register → sign → verify)
 
 ```python
 import os
-import citizenofthecloud as c
+from citizenofthecloud import register_agent, CloudIdentity, verify_agent
 
-result = c.register_agent(
+# 1. Register a new agent (one-time; needs an SDK token from /account)
+reg = register_agent(
     sdk_token=os.environ["COTC_SDK_TOKEN"],
     name="My Research Bot",
     declared_purpose="Summarize papers and surface trends",
     autonomy_level="tool",
 )
+print(reg["cloud_id"])
+print(reg["private_key"])    # STORE SECURELY
 
-print(result["cloud_id"])
-print(result["public_key"])
-print(result["private_key"])   # STORE SECURELY — the server keeps only the public key
+# 2. Sign an outbound request
+import requests
+me = CloudIdentity(cloud_id=reg["cloud_id"], private_key=reg["private_key"])
+response = requests.post(
+    "https://other-agent.com/api/task",
+    json={"task": "analyze"},
+    headers=me.sign(),
+)
+
+# 3. On the receiving side — verify an inbound request
+result = verify_agent(request.headers)
+if result["verified"]:
+    print(f"Verified: {result['agent']['name']} (trust {result['agent']['trust_score']})")
 ```
 
-The returned `cloud_id` and `private_key` are the inputs to `CloudIdentity` for signing subsequent requests (see below).
+---
 
-### Sign outbound requests
+## Examples per surface
+
+### Key management (#13 generate-keypair)
 
 ```python
-import os
-from citizenofthecloud import CloudIdentity
+from citizenofthecloud import generate_key_pair
+
+keys = generate_key_pair()
+print(keys["public_key"])    # submit during manual registration
+print(keys["private_key"])   # keep secret
+```
+
+### Registration (#17 register-agent)
+
+```python
+from citizenofthecloud import register_agent
+
+result = register_agent(
+    sdk_token=os.environ["COTC_SDK_TOKEN"],
+    name="My Research Bot",
+    declared_purpose="Summarize papers and surface trends",
+    autonomy_level="tool",   # 'tool' | 'assistant' | 'agent' | 'self-directing'
+    capabilities=["summarize", "cite"],
+    operational_domain="research-lab.example.com",
+)
+```
+
+### Outbound signing (#10 sign-headers, #11 sign-request, #12 cloud-fetch)
+
+```python
+from citizenofthecloud import CloudIdentity, cloud_fetch
 
 me = CloudIdentity(
     cloud_id=os.environ["CLOUD_ID"],
     private_key=os.environ["CLOUD_PRIVATE_KEY"],
 )
 
-import requests
-response = requests.post(
-    "https://other-agent.com/api/task",
-    json={"task": "analyze this"},
-    headers=me.sign(),
+# 10 — simple (signs cloud_id + timestamp)
+headers = me.sign()
+
+# 11 — request-bound (also signs URL + method + body hash)
+req_headers = me.sign_request(
+    "https://other.example.com/api/data",
+    method="POST",
+    body='{"q":"x"}',
+)
+
+# 12 — convenience: HTTP call with auto-signed request-bound headers
+resp = cloud_fetch(me, "https://other.example.com/api/data",
+                   method="POST", body='{"q":"x"}')
+print(resp["status"], resp["body"])
+```
+
+### Inbound verification (#5 verify-agent, #6 verify-request, #14 trust-policy)
+
+```python
+from citizenofthecloud import verify_agent, verify_request, TrustPolicy
+
+policy = TrustPolicy(
+    minimum_trust_score=0.5,
+    require_covenant=True,
+    allowed_autonomy_levels=["agent", "assistant"],
+)
+
+# 5 — simple header verification
+r1 = verify_agent(request.headers, policy=policy)
+
+# 6 — request-bound (catches URL / method / body tampering)
+r2 = verify_request(
+    request.headers,
+    url=request.url, method=request.method, body=request.body,
+    policy=policy,
+)
+
+if not r2["verified"]:
+    return {"error": r2["reason"]}, 401
+print(f"Verified {r2['agent']['name']}")
+```
+
+### Challenge / Respond (#7, #8, #9 prove-identity)
+
+```python
+from citizenofthecloud import (
+    CloudIdentity, request_challenge, submit_challenge_response,
+)
+
+me = CloudIdentity(cloud_id="cc-...", private_key="-----BEGIN PRIVATE KEY-----\n...")
+
+# 9 — full self-prove loop in one call (recommended)
+verified = me.prove_identity()
+print(verified["verified"])   # True
+
+# Or — compose the three steps manually:
+# 7 — request challenge
+challenge = request_challenge("https://citizenofthecloud.com", me.cloud_id)
+# (signing happens locally with the private key)
+# 8 — submit response
+result = submit_challenge_response(
+    "https://citizenofthecloud.com", me.cloud_id, challenge["nonce"], signature_b64,
 )
 ```
 
-### Verify incoming requests
+### Registry queries (#1, #2, #3, #4)
 
 ```python
-from citizenofthecloud import verify_agent
+from citizenofthecloud import (
+    lookup_agent, list_directory, get_governance_feed, CloudIdentity,
+)
 
-result = verify_agent(request.headers)
+# 1 — Look up another agent
+agent = lookup_agent("https://citizenofthecloud.com", "cc-abc...")
 
-if result["verified"]:
-    print(f"Verified: {result['agent']['name']}")
-    print(f"Trust: {result['agent']['trust_score']}")
-else:
-    print(f"Rejected: {result['reason']}")
+# 2 — Fetch your own passport
+me = CloudIdentity(cloud_id="cc-...", private_key="-----BEGIN ...")
+my_passport = me.get_passport()
+
+# 3 — Browse the public directory
+agents = list_directory("https://citizenofthecloud.com")
+
+# 4 — Read the governance event feed
+feed = get_governance_feed("https://citizenofthecloud.com")
 ```
 
-### Prove your own identity (challenge / respond)
-
-```python
-from citizenofthecloud import CloudIdentity
-
-me = CloudIdentity(cloud_id="cc-...", private_key="-----BEGIN PRIVATE KEY-----\n...")
-result = me.prove_identity()
-print(result["verified"])  # True if the registry's challenge succeeds
-```
-
-### FastAPI integration
+### FastAPI route guard (#16 http-middleware)
 
 ```python
 from fastapi import FastAPI, Depends
-from citizenofthecloud.fastapi import cloud_guard
+from citizenofthecloud import TrustPolicy
+from citizenofthecloud.fastapi import cloud_guard, CloudGuard
 
 app = FastAPI()
 
+# Option A — per-route Depends() guard (returns the verified agent)
 @app.post("/api/task")
-async def task(agent=Depends(cloud_guard())):
-    print(f"Request from {agent['name']}")
-    return {"status": "accepted"}
+async def task(agent=Depends(cloud_guard(TrustPolicy(minimum_trust_score=0.5)))):
+    return {"hello": agent["name"]}
+
+# Option B — app-wide ASGI middleware
+app.add_middleware(CloudGuard, policy=TrustPolicy(minimum_trust_score=0.5))
 ```
 
-### Generate keys without registering
-
-If you want to manage registration yourself (or already have a keypair):
+### Cache control (#15 clear-cache)
 
 ```python
-from citizenofthecloud import generate_key_pair
-
-keys = generate_key_pair()
-print(keys["public_key"])   # submit during manual registration
-print(keys["private_key"])  # keep secret
+from citizenofthecloud import clear_cache
+clear_cache()   # useful in tests, or after a trust-score update
 ```
 
-## Environment Variables
+---
+
+## Environment variables
 
 | Variable | Description |
 |---|---|
 | `CLOUD_ID` | Your agent's Cloud ID (e.g., `cc-7f3a9b2e-...`) |
 | `CLOUD_PRIVATE_KEY` | Your agent's Ed25519 private key (PEM format) |
-| `COTC_SDK_TOKEN` | Bootstrap SDK token (`cotc_sdk_*`) for `register_agent()`. Obtain from [citizenofthecloud.com/account](https://citizenofthecloud.com/account). |
+| `COTC_SDK_TOKEN` | Bootstrap SDK token (`cotc_sdk_*`) for `register_agent()` and `report-agent` flows. Get one at [citizenofthecloud.com/account](https://citizenofthecloud.com/account). |
+
+---
 
 ## Links
 
-- [Citizen of the Cloud](https://citizenofthecloud.com)
-- [SDK Documentation](https://citizenofthecloud.com/docs)
+- [citizenofthecloud.com](https://citizenofthecloud.com)
+- [Documentation](https://citizenofthecloud.com/docs)
 - [Specification](https://citizenofthecloud.com/spec)
 - [Account / SDK tokens](https://citizenofthecloud.com/account)
+- Sister SDKs: [sdk-js](https://github.com/citizenofthecloud/sdk-js) · [sdk-go](https://github.com/citizenofthecloud/sdk-go) · [sdk-rust](https://github.com/citizenofthecloud/sdk-rust)
+- Framework integrations: [langchain](https://github.com/citizenofthecloud/langchain) · [crewai](https://github.com/citizenofthecloud/crewai) · [agent-framework](https://github.com/citizenofthecloud/agent-framework)
+- [MCP server](https://github.com/citizenofthecloud/mcp-server)
 
 ## License
 
