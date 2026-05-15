@@ -202,6 +202,31 @@ agents = list_directory("https://citizenofthecloud.com")
 feed = get_governance_feed("https://citizenofthecloud.com")
 ```
 
+#### Reading the reputation block (Layer 3)
+
+`lookup_agent()` now surfaces a `reputation` field alongside the composite `trust_score`.
+The composite stays at `agent["trust_score"]`; the component signals live at `agent["reputation"]`
+and let relying parties weight inputs against their own use case. Signals refresh every 5 minutes;
+a freshly registered agent may return `reputation: None` — treat null as "not enough data yet,"
+not as "zero across all signals."
+
+```python
+agent = lookup_agent("https://citizenofthecloud.com", "cc-abc...")
+
+# Composite — fast threshold check
+if agent["trust_score"] >= 0.5:
+    ...
+
+# Components — hard-reject on any upheld report, regardless of composite
+rep = agent.get("reputation")
+if rep and rep["reports_upheld"] >= 1:
+    raise PermissionError("agent has upheld governance reports")
+
+# Recency-weighted reliability — prefer 30-day success rate for long-lived agents
+if rep and rep["lifetime_verifications"] >= 100 and rep["success_rate_30d"] >= 0.9:
+    accept(agent)
+```
+
 ### FastAPI route guard (#16 http-middleware)
 
 ```python
