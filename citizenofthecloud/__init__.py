@@ -44,7 +44,11 @@ __all__ = [
     "register_agent",
 ]
 
-DEFAULT_REGISTRY = "https://citizenofthecloud.com"
+# Canonical host is www. The bare apex citizenofthecloud.com 307-redirects
+# here, and requests/urllib strip the Authorization header on cross-host
+# redirects (per RFC 9110) — so callers using the bare apex silently fail
+# register_agent (and any future auth-bearing endpoint) with a 401.
+DEFAULT_REGISTRY = "https://www.citizenofthecloud.com"
 DEFAULT_MAX_AGE = 300  # 5 minutes
 
 
